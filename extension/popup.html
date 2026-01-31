@@ -179,6 +179,73 @@
     .error-message.visible {
       display: block;
     }
+
+    .btn-secondary {
+      background: #6c757d;
+      color: white;
+      margin-top: 8px;
+    }
+
+    .btn-secondary:hover {
+      background: #5a6268;
+    }
+
+    .debug-results {
+      display: none;
+      margin-top: 16px;
+      padding: 12px;
+      background: #fff3cd;
+      border-radius: 8px;
+      border: 1px solid #ffc107;
+      font-size: 12px;
+    }
+
+    .debug-results.visible {
+      display: block;
+    }
+
+    .debug-results h3 {
+      font-size: 14px;
+      margin-bottom: 8px;
+      color: #856404;
+    }
+
+    .debug-summary {
+      margin-bottom: 8px;
+    }
+
+    .debug-summary div {
+      display: flex;
+      justify-content: space-between;
+      padding: 2px 0;
+    }
+
+    .skip-reasons {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #ffc107;
+    }
+
+    .skip-reasons h4 {
+      font-size: 12px;
+      color: #856404;
+      margin-bottom: 4px;
+    }
+
+    .copy-btn {
+      margin-top: 8px;
+      padding: 6px 12px;
+      font-size: 11px;
+      background: #28a745;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .copy-btn:hover {
+      background: #218838;
+    }
   </style>
 </head>
 <body>
@@ -212,6 +279,10 @@
     Sync Bookmarks
   </button>
 
+  <button id="debugBtn" class="btn btn-secondary">
+    Debug Snapshot
+  </button>
+
   <div id="results" class="results">
     <h3>Sync Results</h3>
     <div class="results-list">
@@ -222,6 +293,20 @@
   </div>
 
   <div id="errorMessage" class="error-message"></div>
+
+  <div id="debugResults" class="debug-results">
+    <h3>Debug Snapshot</h3>
+    <div class="debug-summary">
+      <div><span>Total found:</span><span id="debugTotal">0</span></div>
+      <div><span>Would capture:</span><span id="debugCaptured">0</span></div>
+      <div><span>Would skip:</span><span id="debugSkipped">0</span></div>
+    </div>
+    <div id="skipReasons" class="skip-reasons">
+      <h4>Skip Reasons:</h4>
+      <div id="skipReasonsList"></div>
+    </div>
+    <button id="copyDebugBtn" class="copy-btn">Copy Full Report</button>
+  </div>
 
   <script src="popup.js"></script>
 </body>

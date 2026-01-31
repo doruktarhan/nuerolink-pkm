@@ -1,6 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import select
+from datetime import datetime
+from pathlib import Path
+import json
 
 from app.core.database import get_db
 from app.models.item import SavedItem
@@ -10,6 +13,10 @@ from app.schemas.ingest import (
     SavedItemResponse,
     ItemListResponse
 )
+
+# Debug snapshots storage directory
+DEBUG_DIR = Path(__file__).parent.parent.parent / "data" / "debug_snapshots"
+DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
 router = APIRouter()
 
@@ -146,3 +153,86 @@ async def get_item(item_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Item not found")
 
     return SavedItemResponse.model_validate(item)
+
+
+# =============================================================================
+# DEBUG ENDPOINTS - For AI-assisted debugging
+# =============================================================================
+
+@router.post("/api/debug")
+async def save_debug_snapshot(snapshot: dict):
+    """
+    Save a debug snapshot from the extension.
+    Returns the snapshot ID for later retrieval.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    snapshot_id = f"debug_{timestamp}"
+    filepath = DEBUG_DIR / f"{snapshot_id}.json"
+
+    # Add server-side metadata
+    snapshot["_server_received"] = datetime.now().isoformat()
+    snapshot["_id"] = snapshot_id
+
+    with open(filepath, "w") as f:
+        json.dump(snapshot, f, indent=2)
+
+    # Also save as "latest" for easy access
+    latest_path = DEBUG_DIR / "latest.json"
+    with open(latest_path, "w") as f:
+        json.dump(snapshot, f, indent=2)
+
+    return {
+        "success": True,
+        "id": snapshot_id,
+        "path": str(filepath)
+    }
+
+
+@router.get("/api/debug/latest")
+async def get_latest_debug_snapshot():
+    """
+    Get the most recent debug snapshot.
+    Used by AI agents to analyze extension behavior.
+    """
+    latest_path = DEBUG_DIR / "latest.json"
+
+    if not latest_path.exists():
+        raise HTTPException(status_code=404, detail="No debug snapshots found")
+
+    with open(latest_path, "r") as f:
+        snapshot = json.load(f)
+
+    return snapshot
+
+
+@router.get("/api/debug/list")
+async def list_debug_snapshots(limit: int = Query(10, ge=1, le=100)):
+    """List available debug snapshots."""
+    snapshots = []
+
+    for filepath in sorted(DEBUG_DIR.glob("debug_*.json"), reverse=True)[:limit]:
+        with open(filepath, "r") as f:
+            data = json.load(f)
+            snapshots.append({
+                "id": data.get("_id", filepath.stem),
+                "timestamp": data.get("timestamp"),
+                "totalArticles": data.get("totalArticlesFound", 0),
+                "captured": data.get("summary", {}).get("captured", 0),
+                "skipped": data.get("summary", {}).get("skipped", 0)
+            })
+
+    return {"snapshots": snapshots}
+
+
+@router.get("/api/debug/{snapshot_id}")
+async def get_debug_snapshot(snapshot_id: str):
+    """Get a specific debug snapshot by ID."""
+    filepath = DEBUG_DIR / f"{snapshot_id}.json"
+
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail=f"Snapshot {snapshot_id} not found")
+
+    with open(filepath, "r") as f:
+        snapshot = json.load(f)
+
+    return snapshot

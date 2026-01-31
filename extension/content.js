@@ -8,6 +8,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(err => sendResponse({ error: err.message }));
     return true; // Keep channel open for async response
   }
+
+  if (message.action === 'generateDebugSnapshot') {
+    generateDebugSnapshot()
+      .then(sendResponse)
+      .catch(err => sendResponse({ error: err.message }));
+    return true;
+  }
 });
 
 async function scrapeAndSync(batchLimit, skipDuplicates = false) {
@@ -303,4 +310,183 @@ function extractContentFromArticle(article) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Generate a structured debug snapshot for AI analysis.
+ * Captures what the extension sees vs what it would capture.
+ */
+async function generateDebugSnapshot() {
+  // Find all candidate article elements
+  const articles = document.querySelectorAll('article[data-testid="tweet"]');
+
+  const snapshot = {
+    timestamp: Date.now(),
+    url: window.location.href,
+    totalArticlesFound: articles.length,
+    items: [],
+    summary: {
+      captured: 0,
+      skipped: 0,
+      skipReasons: {}
+    }
+  };
+
+  articles.forEach((article, index) => {
+    const item = analyzeArticleForDebug(article, index);
+    snapshot.items.push(item);
+
+    if (item.wouldCapture) {
+      snapshot.summary.captured++;
+    } else {
+      snapshot.summary.skipped++;
+      const reason = item.skipReason || 'UNKNOWN';
+      snapshot.summary.skipReasons[reason] = (snapshot.summary.skipReasons[reason] || 0) + 1;
+    }
+  });
+
+  // Send to backend for storage
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/debug`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(snapshot)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Server error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return { success: true, snapshot, savedAs: data.id };
+  } catch (err) {
+    // Return snapshot even if backend save fails
+    return { success: false, snapshot, error: err.message };
+  }
+}
+
+/**
+ * Analyze a single article element for debugging.
+ * Returns structured info about what the extension sees and why it would skip/capture.
+ */
+function analyzeArticleForDebug(article, index) {
+  const result = {
+    index,
+    wouldCapture: false,
+    skipReason: null,
+
+    // Detection signals
+    hasStatusLink: false,
+    statusLinkHref: null,
+    extractedUrl: null,
+    extractedUsername: null,
+
+    // Content type signals
+    hasArticleCover: false,
+    hasTweetText: false,
+    hasVideo: false,
+    hasImages: false,
+    imageCount: 0,
+
+    // All data-testid attributes found
+    dataTestIds: [],
+
+    // All href links found (for debugging URL patterns)
+    allHrefs: [],
+
+    // Text preview (first 200 chars)
+    textPreview: null,
+
+    // DOM fingerprint
+    tagName: article.tagName,
+    outerHTMLLength: article.outerHTML.length
+  };
+
+  // Collect all data-testid attributes
+  const testIdElements = article.querySelectorAll('[data-testid]');
+  testIdElements.forEach(el => {
+    const testId = el.getAttribute('data-testid');
+    if (!result.dataTestIds.includes(testId)) {
+      result.dataTestIds.push(testId);
+    }
+  });
+
+  // Collect all href links
+  const links = article.querySelectorAll('a[href]');
+  links.forEach(link => {
+    const href = link.getAttribute('href');
+    if (href && !result.allHrefs.includes(href)) {
+      result.allHrefs.push(href);
+    }
+  });
+
+  // Check for status link (the key selector)
+  const tweetLink = article.querySelector('a[href*="/status/"]');
+  result.hasStatusLink = !!tweetLink;
+
+  if (!tweetLink) {
+    result.skipReason = 'NO_STATUS_LINK';
+
+    // Try to find what links ARE present for debugging
+    const anyLinks = article.querySelectorAll('a[href*="/"]');
+    if (anyLinks.length > 0) {
+      result.alternativeLinks = Array.from(anyLinks).slice(0, 5).map(l => l.getAttribute('href'));
+    }
+
+    return result;
+  }
+
+  result.statusLinkHref = tweetLink.getAttribute('href');
+
+  // Check regex match
+  const href = result.statusLinkHref;
+  const match = href.match(/\/([^\/]+)\/status\/(\d+)/);
+
+  if (!match) {
+    result.skipReason = 'REGEX_MISMATCH';
+    return result;
+  }
+
+  result.extractedUsername = match[1];
+  const tweetId = match[2];
+
+  // Check for skip conditions
+  if (result.extractedUsername === 'i') {
+    result.skipReason = 'USERNAME_IS_I';
+    return result;
+  }
+
+  if (href.includes('/analytics') || href.includes('/retweets')) {
+    result.skipReason = 'ANALYTICS_OR_RETWEETS';
+    return result;
+  }
+
+  result.extractedUrl = `https://twitter.com/${result.extractedUsername}/status/${tweetId}`;
+  result.wouldCapture = true;
+
+  // Content type detection
+  result.hasArticleCover = !!article.querySelector('[data-testid="article-cover-image"]');
+  result.hasTweetText = !!article.querySelector('[data-testid="tweetText"]');
+  result.hasVideo = !!article.querySelector('[data-testid="videoPlayer"]');
+
+  const photos = article.querySelectorAll('[data-testid="tweetPhoto"]');
+  result.hasImages = photos.length > 0;
+  result.imageCount = photos.length;
+
+  // Text preview
+  const tweetText = article.querySelector('[data-testid="tweetText"]');
+  if (tweetText) {
+    result.textPreview = tweetText.innerText.slice(0, 200);
+  } else if (result.hasArticleCover) {
+    // Try to get article title
+    const contentArea = article.querySelector('[class*="r-xyw6el"]');
+    if (contentArea) {
+      const textDivs = contentArea.querySelectorAll('div[dir="auto"]');
+      if (textDivs.length > 0) {
+        result.textPreview = textDivs[0].innerText.slice(0, 200);
+      }
+    }
+  }
+
+  return result;
 }
