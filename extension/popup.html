@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NeuroLink</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      width: 320px;
+      padding: 16px;
+      background: #f8f9fa;
+      color: #1a1a2e;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .header h1 {
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .status {
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 14px;
+      text-align: center;
+    }
+
+    .status.ready {
+      background: #e3f2fd;
+      color: #1565c0;
+    }
+
+    .status.processing {
+      background: #fff3e0;
+      color: #ef6c00;
+    }
+
+    .status.success {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+
+    .status.error {
+      background: #ffebee;
+      color: #c62828;
+    }
+
+    .progress-container {
+      display: none;
+      margin-bottom: 16px;
+    }
+
+    .progress-container.visible {
+      display: block;
+    }
+
+    .progress-bar {
+      height: 4px;
+      background: #e0e0e0;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: #1976d2;
+      width: 0%;
+      animation: progress 2s ease-in-out infinite;
+    }
+
+    @keyframes progress {
+      0% { width: 0%; margin-left: 0%; }
+      50% { width: 50%; margin-left: 25%; }
+      100% { width: 0%; margin-left: 100%; }
+    }
+
+    .settings {
+      margin-bottom: 16px;
+    }
+
+    .settings label {
+      display: block;
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 4px;
+    }
+
+    .settings input {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+
+    .settings input:focus {
+      outline: none;
+      border-color: #1976d2;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .btn-primary {
+      background: #1976d2;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #1565c0;
+    }
+
+    .btn-primary:disabled {
+      background: #bdbdbd;
+      cursor: not-allowed;
+    }
+
+    .results {
+      display: none;
+      margin-top: 16px;
+      padding: 12px;
+      background: white;
+      border-radius: 8px;
+      border: 1px solid #e0e0e0;
+    }
+
+    .results.visible {
+      display: block;
+    }
+
+    .results h3 {
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+
+    .results-list {
+      font-size: 12px;
+      color: #666;
+    }
+
+    .results-list div {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 0;
+    }
+
+    .error-message {
+      display: none;
+      margin-top: 16px;
+      padding: 12px;
+      background: #ffebee;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #c62828;
+    }
+
+    .error-message.visible {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>NeuroLink</h1>
+  </div>
+
+  <div id="status" class="status ready">
+    Ready to sync
+  </div>
+
+  <div id="progress" class="progress-container">
+    <div class="progress-bar">
+      <div class="progress-bar-fill"></div>
+    </div>
+  </div>
+
+  <div class="settings">
+    <label for="batchLimit">Batch Limit</label>
+    <input type="number" id="batchLimit" value="50" min="1" max="500">
+  </div>
+
+  <div class="settings">
+    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+      <input type="checkbox" id="skipDuplicates" style="width: auto;">
+      <span>Skip duplicate check (testing)</span>
+    </label>
+  </div>
+
+  <button id="syncBtn" class="btn btn-primary">
+    Sync Bookmarks
+  </button>
+
+  <div id="results" class="results">
+    <h3>Sync Results</h3>
+    <div class="results-list">
+      <div><span>New items:</span><span id="newCount">0</span></div>
+      <div><span>Duplicates skipped:</span><span id="dupCount">0</span></div>
+      <div><span>Failed:</span><span id="failCount">0</span></div>
+    </div>
+  </div>
+
+  <div id="errorMessage" class="error-message"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

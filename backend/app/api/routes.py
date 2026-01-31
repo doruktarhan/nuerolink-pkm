@@ -1,0 +1,148 @@
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from sqlalchemy import select
+
+from app.core.database import get_db
+from app.models.item import SavedItem
+from app.schemas.ingest import (
+    IngestPayload,
+    IngestResponse,
+    SavedItemResponse,
+    ItemListResponse
+)
+
+router = APIRouter()
+
+
+@router.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
+
+@router.post("/api/ingest", response_model=IngestResponse)
+async def ingest_items(payload: IngestPayload, db: Session = Depends(get_db)):
+    """
+    Ingest items from the extension.
+    The extension now provides full content, so we just store it.
+    For each item:
+    - Check for duplicates
+    - Store with full_content from extension
+    - Set status based on whether content was provided
+    """
+    new_count = 0
+    duplicate_count = 0
+    failed_count = 0
+
+    for item in payload.items:
+        # Extract content_type from metadata
+        content_type = "tweet"
+        if item.extra_data and "content_type" in item.extra_data:
+            content_type = item.extra_data["content_type"]
+
+        # Determine if we have content
+        # For articles: title in metadata counts as content
+        # For tweets: full_content or preview_text counts
+        has_content = item.full_content is not None
+        if not has_content and content_type == "article" and item.extra_data:
+            has_content = item.extra_data.get("article_title") is not None
+
+        # Check for existing item
+        existing = db.execute(
+            select(SavedItem).where(SavedItem.source_url == item.url)
+        ).scalar_one_or_none()
+
+        if existing:
+            if payload.skip_duplicates:
+                # Update existing item with new content
+                existing.raw_preview = item.preview_text
+                existing.full_content = item.full_content
+                existing.thread_content = item.thread_content
+                existing.content_type = content_type
+                existing.extra_data = item.extra_data
+                existing.status = "fetched" if has_content else "pending"
+                existing.fetch_attempts = 1 if has_content else 0
+                if has_content:
+                    new_count += 1
+                else:
+                    failed_count += 1
+            else:
+                duplicate_count += 1
+            continue
+
+        # Determine status based on whether content was fetched by extension
+        status = "fetched" if has_content else "pending"
+
+        # Create new item with content from extension
+        saved_item = SavedItem(
+            source_url=item.url,
+            source_platform=payload.platform,
+            content_type=content_type,
+            raw_preview=item.preview_text,
+            full_content=item.full_content,
+            thread_content=item.thread_content,
+            extra_data=item.extra_data,
+            status=status,
+            fetch_attempts=1 if has_content else 0
+        )
+        db.add(saved_item)
+
+        if has_content:
+            new_count += 1
+        else:
+            failed_count += 1
+
+    db.commit()
+
+    success = failed_count == 0
+    message = f"Processed {len(payload.items)} items: {new_count} new, {duplicate_count} duplicates, {failed_count} failed"
+
+    return IngestResponse(
+        success=success,
+        new_count=new_count,
+        duplicate_count=duplicate_count,
+        failed_count=failed_count,
+        message=message
+    )
+
+
+@router.get("/api/items", response_model=ItemListResponse)
+async def list_items(
+    status: str | None = Query(None, description="Filter by status"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db)
+):
+    """List saved items with optional status filter."""
+    query = select(SavedItem)
+
+    if status:
+        query = query.where(SavedItem.status == status)
+
+    query = query.order_by(SavedItem.created_at.desc())
+    query = query.offset(offset).limit(limit)
+
+    items = db.execute(query).scalars().all()
+
+    # Get total count
+    count_query = select(SavedItem)
+    if status:
+        count_query = count_query.where(SavedItem.status == status)
+    total = len(db.execute(count_query).scalars().all())
+
+    return ItemListResponse(
+        items=[SavedItemResponse.model_validate(item) for item in items],
+        total=total
+    )
+
+
+@router.get("/api/items/{item_id}", response_model=SavedItemResponse)
+async def get_item(item_id: int, db: Session = Depends(get_db)):
+    """Get a single item by ID."""
+    item = db.execute(
+        select(SavedItem).where(SavedItem.id == item_id)
+    ).scalar_one_or_none()
+
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    return SavedItemResponse.model_validate(item)
