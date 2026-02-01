@@ -9,8 +9,9 @@ const resultsEl = document.getElementById('results');
 const errorMessageEl = document.getElementById('errorMessage');
 const debugResultsEl = document.getElementById('debugResults');
 
-// Store last debug snapshot for copy functionality
+// Store last debug data for copy functionality (works for both Debug Snapshot and Debug Mode Sync)
 let lastDebugSnapshot = null;
+let lastDebugSyncResult = null;
 
 // Load saved batch limit
 chrome.storage.local.get(['batchLimit'], (result) => {
@@ -184,11 +185,87 @@ function showDebugResults(snapshot) {
   debugResultsEl.className = 'debug-results visible';
 }
 
-// Copy debug report button
-document.getElementById('copyDebugBtn').addEventListener('click', () => {
-  if (!lastDebugSnapshot) return;
+// Debug Mode Sync button handler
+document.getElementById('debugSyncBtn').addEventListener('click', async () => {
+  hideError();
+  debugResultsEl.className = 'debug-results';
 
-  const report = JSON.stringify(lastDebugSnapshot, null, 2);
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+  const isBookmarksPage = tab.url.includes('twitter.com/i/bookmarks') ||
+                          tab.url.includes('x.com/i/bookmarks');
+
+  if (!isBookmarksPage) {
+    showError('Navigate to Twitter bookmarks first');
+    setStatus('Wrong page', 'error');
+    return;
+  }
+
+  // Check backend
+  const backendHealthy = await checkBackendHealth();
+  if (!backendHealthy) {
+    showError('Backend not running');
+    setStatus('Backend unavailable', 'error');
+    return;
+  }
+
+  setStatus('Running debug sync (scrolling)...', 'processing');
+  showProgress(true);
+  document.getElementById('debugSyncBtn').disabled = true;
+
+  const batchLimit = parseInt(batchLimitInput.value) || 50;
+
+  try {
+    const response = await chrome.tabs.sendMessage(tab.id, {
+      action: 'debugModeSync',
+      batchLimit: batchLimit
+    });
+
+    showProgress(false);
+
+    if (response.error) {
+      showError(response.error);
+      setStatus('Debug sync failed', 'error');
+    } else {
+      // Store for copy functionality
+      lastDebugSyncResult = response;
+
+      // Show special debug sync results
+      document.getElementById('debugTotal').textContent = response.summary.uniqueItemsSeen;
+      document.getElementById('debugCaptured').textContent = response.summary.itemsCaptured;
+      document.getElementById('debugSkipped').textContent = response.summary.itemsLost;
+
+      const skipReasonsList = document.getElementById('skipReasonsList');
+      skipReasonsList.innerHTML = `<div>Scroll cycles: ${response.scrollCycles}</div>`;
+
+      if (response.summary.itemsLost > 0) {
+        skipReasonsList.innerHTML += `<div style="color: red; margin-top: 4px;">⚠️ ${response.summary.itemsLost} items LOST during scroll!</div>`;
+        skipReasonsList.innerHTML += `<div style="font-size: 10px;">Check /api/debug/latest for details</div>`;
+      }
+
+      debugResultsEl.className = 'debug-results visible';
+      setStatus(`Debug sync complete! Lost: ${response.summary.itemsLost}`, response.summary.itemsLost > 0 ? 'error' : 'success');
+    }
+  } catch (e) {
+    showProgress(false);
+    showError(`Error: ${e.message}`);
+    setStatus('Debug sync failed', 'error');
+  }
+
+  document.getElementById('debugSyncBtn').disabled = false;
+});
+
+// Copy debug report button - works for both Debug Snapshot and Debug Mode Sync
+document.getElementById('copyDebugBtn').addEventListener('click', () => {
+  const dataToExport = lastDebugSnapshot || lastDebugSyncResult;
+  if (!dataToExport) {
+    const btn = document.getElementById('copyDebugBtn');
+    btn.textContent = 'No data!';
+    setTimeout(() => btn.textContent = 'Copy Full Report', 2000);
+    return;
+  }
+
+  const report = JSON.stringify(dataToExport, null, 2);
   navigator.clipboard.writeText(report).then(() => {
     const btn = document.getElementById('copyDebugBtn');
     btn.textContent = 'Copied!';

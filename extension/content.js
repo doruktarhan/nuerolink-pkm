@@ -15,33 +15,49 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(err => sendResponse({ error: err.message }));
     return true;
   }
+
+  if (message.action === 'debugModeSync') {
+    debugModeSync(message.batchLimit)
+      .then(sendResponse)
+      .catch(err => sendResponse({ error: err.message }));
+    return true;
+  }
 });
 
 async function scrapeAndSync(batchLimit, skipDuplicates = false) {
   const collectedItems = new Map();
-  let lastHeight = 0;
   let noNewContentCount = 0;
   let duplicatesFound = false;
+
+  // CRITICAL: Twitter uses virtual scrolling - items disappear from DOM as you scroll!
+  // We must capture items INCREMENTALLY with small scroll steps.
+  const SCROLL_INCREMENT = 800; // Scroll ~1 viewport at a time
+  let currentScrollY = 0;
 
   // Expand all "Show more" buttons before initial scrape
   await expandAllShowMore();
 
-  // Initial scrape
+  // Initial scrape at top
   scrapeVisibleTweets(collectedItems);
+  console.log(`[NeuroLink] Initial scrape: ${collectedItems.size} items`);
 
-  // Auto-scroll to find more bookmarks
-  while (collectedItems.size < batchLimit && noNewContentCount < 3 && !duplicatesFound) {
-    // Scroll down
-    window.scrollTo(0, document.body.scrollHeight);
+  // Incremental scroll to find more bookmarks
+  while (collectedItems.size < batchLimit && noNewContentCount < 5 && !duplicatesFound) {
+    // Scroll down by INCREMENT (not all the way to bottom!)
+    currentScrollY += SCROLL_INCREMENT;
+    window.scrollTo(0, currentScrollY);
 
     // Wait for content to load
-    await sleep(1500);
+    await sleep(800);
 
     // Expand any new "Show more" buttons that appeared
     await expandAllShowMore();
 
+    // IMMEDIATELY capture visible items before next scroll removes them
     const previousSize = collectedItems.size;
     scrapeVisibleTweets(collectedItems);
+
+    console.log(`[NeuroLink] After scroll to ${currentScrollY}: ${collectedItems.size} items (was ${previousSize})`);
 
     // Check if we found new content
     if (collectedItems.size === previousSize) {
@@ -55,13 +71,17 @@ async function scrapeAndSync(batchLimit, skipDuplicates = false) {
       break;
     }
 
-    // Check for page height change (indicates end of content)
-    const currentHeight = document.body.scrollHeight;
-    if (currentHeight === lastHeight) {
-      noNewContentCount++;
+    // Check if we've scrolled past the document
+    if (currentScrollY >= document.body.scrollHeight) {
+      // We've reached the end, but let Twitter load more if it will
+      await sleep(1000);
+      if (currentScrollY >= document.body.scrollHeight) {
+        noNewContentCount += 2; // Speed up exit
+      }
     }
-    lastHeight = currentHeight;
   }
+
+  console.log(`[NeuroLink] Final collection: ${collectedItems.size} items`);
 
   // Convert to array and limit
   let items = Array.from(collectedItems.values()).slice(0, batchLimit);
@@ -363,6 +383,179 @@ async function generateDebugSnapshot() {
     // Return snapshot even if backend save fails
     return { success: false, snapshot, error: err.message };
   }
+}
+
+/**
+ * Debug Mode Sync - runs a full sync while capturing every item encountered.
+ * Tracks items across scroll cycles to identify what gets lost.
+ */
+async function debugModeSync(batchLimit) {
+  const debugLog = {
+    timestamp: Date.now(),
+    url: window.location.href,
+    scrollCycles: [],
+    allItemsSeen: new Map(),  // Track every unique item seen
+    finalCaptured: [],
+    summary: {
+      totalScrollCycles: 0,
+      uniqueItemsSeen: 0,
+      itemsCaptured: 0,
+      itemsLost: 0,
+      lostItems: []
+    }
+  };
+
+  const collectedItems = new Map();
+  let lastHeight = 0;
+  let noNewContentCount = 0;
+  let cycleNumber = 0;
+
+  // Expand all "Show more" buttons before initial scrape
+  await expandAllShowMore();
+
+  // Initial scrape with debug
+  cycleNumber++;
+  const initialCycle = captureScrollCycle(cycleNumber, collectedItems, debugLog.allItemsSeen);
+  debugLog.scrollCycles.push(initialCycle);
+
+  // Auto-scroll to find more bookmarks
+  while (collectedItems.size < batchLimit && noNewContentCount < 3) {
+    // Scroll down
+    window.scrollTo(0, document.body.scrollHeight);
+    await sleep(1500);
+    await expandAllShowMore();
+
+    const previousSize = collectedItems.size;
+
+    // Capture this scroll cycle
+    cycleNumber++;
+    const cycle = captureScrollCycle(cycleNumber, collectedItems, debugLog.allItemsSeen);
+    debugLog.scrollCycles.push(cycle);
+
+    if (collectedItems.size === previousSize) {
+      noNewContentCount++;
+    } else {
+      noNewContentCount = 0;
+    }
+
+    if (collectedItems.size >= batchLimit) break;
+
+    const currentHeight = document.body.scrollHeight;
+    if (currentHeight === lastHeight) {
+      noNewContentCount++;
+    }
+    lastHeight = currentHeight;
+  }
+
+  // Final analysis
+  debugLog.summary.totalScrollCycles = cycleNumber;
+  debugLog.summary.uniqueItemsSeen = debugLog.allItemsSeen.size;
+  debugLog.summary.itemsCaptured = collectedItems.size;
+
+  // Find items that were seen but not captured
+  debugLog.allItemsSeen.forEach((itemInfo, url) => {
+    if (!collectedItems.has(url)) {
+      debugLog.summary.itemsLost++;
+      debugLog.summary.lostItems.push({
+        url,
+        seenInCycles: itemInfo.seenInCycles,
+        lastSeenData: itemInfo.lastData
+      });
+    }
+  });
+
+  debugLog.finalCaptured = Array.from(collectedItems.keys());
+
+  // Convert Map to array for JSON serialization
+  const allItemsSeenArray = [];
+  debugLog.allItemsSeen.forEach((value, key) => {
+    allItemsSeenArray.push({ url: key, ...value });
+  });
+  debugLog.allItemsSeenArray = allItemsSeenArray;
+  delete debugLog.allItemsSeen;
+
+  // Send to backend
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/debug`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(debugLog)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Server error: ${response.status}`);
+    }
+
+    return {
+      success: true,
+      summary: debugLog.summary,
+      scrollCycles: debugLog.scrollCycles.length,
+      captured: collectedItems.size,
+      lost: debugLog.summary.itemsLost
+    };
+  } catch (err) {
+    return { success: false, error: err.message, summary: debugLog.summary };
+  }
+}
+
+/**
+ * Capture a single scroll cycle for debugging.
+ * Scrapes visible items and tracks what was seen.
+ */
+function captureScrollCycle(cycleNumber, collectedItems, allItemsSeen) {
+  const articles = document.querySelectorAll('article[data-testid="tweet"]');
+
+  const cycle = {
+    cycle: cycleNumber,
+    timestamp: Date.now(),
+    articlesInDOM: articles.length,
+    itemsInCollection: collectedItems.size,
+    newItemsThisCycle: 0,
+    skippedThisCycle: [],
+    capturedThisCycle: []
+  };
+
+  articles.forEach((article, index) => {
+    const debugInfo = analyzeArticleForDebug(article, index);
+
+    if (!debugInfo.wouldCapture) {
+      cycle.skippedThisCycle.push({
+        reason: debugInfo.skipReason,
+        href: debugInfo.statusLinkHref || debugInfo.allHrefs[0] || 'no-href'
+      });
+      return;
+    }
+
+    const url = debugInfo.extractedUrl;
+
+    // Track in allItemsSeen
+    if (!allItemsSeen.has(url)) {
+      allItemsSeen.set(url, {
+        firstSeenCycle: cycleNumber,
+        seenInCycles: [cycleNumber],
+        lastData: debugInfo
+      });
+    } else {
+      allItemsSeen.get(url).seenInCycles.push(cycleNumber);
+      allItemsSeen.get(url).lastData = debugInfo;
+    }
+
+    // Add to collection if not already there
+    if (!collectedItems.has(url)) {
+      const contentData = extractContentFromArticle(article);
+      collectedItems.set(url, {
+        url: url,
+        preview_text: contentData.previewText,
+        full_content: contentData.fullContent,
+        thread_content: null,
+        extra_data: contentData.extra_data
+      });
+      cycle.newItemsThisCycle++;
+      cycle.capturedThisCycle.push(url.split('/').pop());
+    }
+  });
+
+  return cycle;
 }
 
 /**
