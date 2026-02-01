@@ -182,36 +182,71 @@ Extension (URLs + content) → Backend (store only) ✓
 
 ---
 
-## 7. Articles Being Skipped (OPEN ISSUE)
+## 7. Twitter Virtual Scrolling (RESOLVED)
 
 ### Status
-**Unresolved** - Needs investigation
+**Resolved** - 2026-02-01
 
 ### Symptom
-Some Twitter Articles are not being captured in the database. All items show `content_type: "tweet"` even when articles exist in bookmarks.
+Items were being lost during sync. Extension reported finding X items but database only had Y items (Y < X).
 
-### Suspected Causes
-1. Article URL extraction may be failing (different link structure?)
-2. Article content extraction returning null (selector issue?)
-3. Articles may be rendered differently in the DOM
+### Root Cause
+**Twitter uses virtual scrolling (DOM virtualization):**
+- Only ~6-11 items exist in the DOM at any time
+- When scrolling down, top items are REMOVED from DOM
+- When scrolling up, bottom items are REMOVED
+- Items outside viewport don't exist in the DOM
 
-### Debug Steps Added
-Console logging was added to `content.js`:
+**Old approach:**
 ```javascript
-console.log(`[NeuroLink] Found ${articles.length} articles on page`);
-console.log(`[NeuroLink] Article ${index}: No status link found`);
-console.log(`[NeuroLink] Article ${index}: Collected ${contentData.extra_data.content_type} - ${fullUrl}`);
+window.scrollTo(0, document.body.scrollHeight); // Jump to bottom
+// By now, all top items are GONE from DOM!
+scrapeVisibleTweets(collectedItems);
 ```
 
-### To Investigate
-1. Refresh Twitter bookmarks page
-2. Open DevTools → Console
-3. Run "Sync Bookmarks"
-4. Check console output for skipped articles
-5. Compare HTML structure of skipped articles vs captured tweets
+### Solution
+**Incremental scrolling with immediate capture:**
+```javascript
+const SCROLL_INCREMENT = 800; // ~1 viewport
+let currentScrollY = 0;
 
-### Potential Fix
-May need to update the URL extraction logic in `scrapeVisibleTweets()` to handle article-specific link structures.
+while (...) {
+  currentScrollY += SCROLL_INCREMENT;
+  window.scrollTo(0, currentScrollY);
+  await sleep(800);
+  scrapeVisibleTweets(collectedItems); // Capture BEFORE items disappear
+}
+```
+
+### Files Changed
+- `extension/content.js` - Changed scroll strategy from jump-to-bottom to incremental
+
+### Known Limitation
+Virtual scrolling means we may still miss some items in edge cases (fast scrolling, network delays). This is a Twitter platform constraint, not fully solvable client-side.
+
+### Debug Tools Added
+- **Debug Snapshot** button - Captures current DOM state for analysis
+- **Debug Mode Sync** button - Runs full sync while tracking every item seen
+- Console logging shows scroll position and capture counts
+
+---
+
+## 8. Articles Being Skipped (PARTIALLY RESOLVED)
+
+### Status
+**Partially Resolved** - Most items now captured with incremental scrolling
+
+### Original Symptom
+Some Twitter Articles not being captured in the database.
+
+### Resolution
+The virtual scrolling fix (Issue #7) resolved most missing items. Articles were being lost during the scroll-to-bottom operation, not due to selector issues.
+
+### Remaining Investigation
+If specific article types are still missing, check:
+1. Article URL structure differences
+2. Content selector compatibility
+3. Use Debug Snapshot to analyze specific skipped items
 
 ---
 

@@ -68,15 +68,17 @@ NeuroLink is a Personal Knowledge Management (PKM) system that:
 ### Flow Steps:
 1. User opens Twitter bookmarks page (`twitter.com/i/bookmarks`)
 2. User clicks extension → "Sync Bookmarks"
-3. Extension auto-scrolls and collects all visible bookmarks
-4. For each bookmark:
-   - Extracts URL from status link
+3. Extension performs **incremental scrolling** (800px steps) to handle Twitter's virtual DOM
+4. After each scroll increment:
+   - Immediately captures visible items before they're virtualized out
    - Clicks "Show more" buttons to expand truncated text
    - Detects content type (tweet vs article)
    - Extracts metadata (images, videos, quotes, etc.)
 5. Extension sends batch to backend `POST /api/ingest`
 6. Backend checks for duplicates, stores new items
 7. Items stored with status "fetched" (content provided) or "pending"
+
+**IMPORTANT:** Twitter uses virtual scrolling - only ~6-11 items exist in DOM at once. Items are removed from DOM when scrolled out of view. The incremental capture strategy ensures items are captured before they disappear.
 
 ---
 
@@ -191,6 +193,31 @@ Extension (URLs + full content) → Backend (store only)
 ### Custom JSONType for SQLite
 
 SQLite doesn't have native JSON support. A custom `JSONType` TypeDecorator in `models/item.py` handles serialization/deserialization of the `extra_data` field.
+
+### Incremental Scrolling for Virtual DOM
+
+Twitter virtualizes its bookmark list - only ~6-11 items exist in DOM at any time. Original approach scrolled to bottom instantly, losing top items.
+
+**Solution:** Scroll 800px at a time, capturing items after each scroll before they disappear.
+
+```javascript
+// OLD (broken): window.scrollTo(0, document.body.scrollHeight);
+// NEW (working):
+currentScrollY += 800;
+window.scrollTo(0, currentScrollY);
+await sleep(800);
+scrapeVisibleTweets(collectedItems); // Capture immediately
+```
+
+### Debug Telemetry Tools
+
+Built-in debugging for diagnosing capture issues:
+
+| Tool | Purpose |
+|------|---------|
+| Debug Snapshot | Captures current DOM state - shows what extension sees |
+| Debug Mode Sync | Runs full sync while tracking every item encountered |
+| Backend `/api/debug` | Stores debug reports for post-mortem analysis |
 
 ---
 
