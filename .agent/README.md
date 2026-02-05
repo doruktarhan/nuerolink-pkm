@@ -1,8 +1,8 @@
 # NeuroLink Agent Documentation
 
-> **Last Updated:** 2026-01-31
-> **Current Phase:** Phase 1 - The Collector (In Progress)
-> **Status:** Functional with known issues
+> **Last Updated:** 2026-02-05
+> **Current Phase:** Phase 2 - The Processor (Completed)
+> **Status:** Functional — AI summarization, embeddings, and semantic search operational
 
 ---
 
@@ -10,9 +10,9 @@
 
 | Document | Description |
 |----------|-------------|
-| [System Architecture](system/architecture.md) | System overview, components, data flow, database schema, tech stack |
+| [System Architecture](system/architecture.md) | Full system design: components, data flow, database schemas (SQLite + Supabase), AI processing pipeline, tech stack, API endpoints |
 | [Critical Errors & Fixes](system/critical-errors.md) | Known issues, errors encountered, and solutions |
-| [Local Development Setup](sop/local-dev.md) | How to set up and run the project locally |
+| [Local Development Setup](sop/local-dev.md) | How to set up and run the project locally (backend, extension, OpenAI, Supabase) |
 
 ---
 
@@ -20,9 +20,9 @@
 
 **NeuroLink** is a Personal Knowledge Management (PKM) system that:
 1. **Collects** Twitter/X bookmarks via Chrome extension
-2. **Processes** content (extracts text, metadata, detects content types)
-3. **Stores** in SQLite database
-4. **(Future)** Enriches with AI summaries and embeddings
+2. **Processes** content with AI (OpenAI GPT-4o-mini summaries + text-embedding-3-small vectors)
+3. **Stores** structured data in SQLite, vector embeddings in Supabase pgvector
+4. **Searches** saved knowledge via semantic similarity search with filters
 5. **(Future)** Provides RAG-based chat interface
 
 ---
@@ -30,26 +30,19 @@
 ## Current Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        USER'S BROWSER                                │
-│  ┌─────────────────┐                                                │
-│  │ Chrome Extension│──── Scrapes bookmarks page ────────────────┐   │
-│  │ (content.js)    │     (authenticated session)                │   │
-│  └─────────────────┘                                            │   │
-└─────────────────────────────────────────────────────────────────│───┘
-                                                                  │
-                                                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        BACKEND SERVER                                │
-│  ┌─────────────────┐     ┌─────────────────┐     ┌───────────────┐ │
-│  │ FastAPI         │────▶│ Routes          │────▶│ SQLite DB     │ │
-│  │ (localhost:8000)│     │ /api/ingest     │     │ neurolink.db  │ │
-│  └─────────────────┘     │ /api/items      │     └───────────────┘ │
-│                          └─────────────────┘                        │
-└─────────────────────────────────────────────────────────────────────┘
+Extension → POST /api/ingest → SQLite → BackgroundTask
+                                              │
+                                    ┌─────────┴─────────┐
+                                    ▼                   ▼
+                              OpenAI GPT          OpenAI Embeddings
+                              (Summary)           (Vectors)
+                                    │                   │
+                                    ▼                   ▼
+                              SQLite              Supabase pgvector
+                              (summary field)     (item_embeddings table)
 ```
 
-**Key Design:** Content is extracted directly by the Chrome extension using the user's authenticated browser session. No backend fetching required.
+**Key Design:** Content is extracted by the Chrome extension using the user's authenticated session. AI processing happens in background tasks after ingest.
 
 ---
 
@@ -65,74 +58,55 @@ neurolink/
 ├── backend/                   # FastAPI Backend
 │   ├── app/
 │   │   ├── main.py           # FastAPI entry point
-│   │   ├── api/routes.py     # API endpoints
-│   │   ├── models/item.py    # SQLAlchemy models
+│   │   ├── api/routes.py     # API endpoints (ingest, items, processing, search)
+│   │   ├── models/item.py    # SQLAlchemy model (with AI processing fields)
 │   │   ├── schemas/ingest.py # Pydantic schemas
+│   │   ├── services/
+│   │   │   ├── openai_service.py  # OpenAI API (summaries + embeddings)
+│   │   │   ├── vector_service.py  # Supabase pgvector client
+│   │   │   └── processor.py      # Background processing orchestrator
 │   │   └── core/
-│   │       ├── config.py     # Settings
+│   │       ├── config.py     # Settings (DB, OpenAI, Supabase)
 │   │       └── database.py   # DB connection
+│   ├── migrations/
+│   │   └── supabase/
+│   │       └── 001_vector_setup.sql  # Supabase table + function setup
 │   ├── data/                 # SQLite database location
-│   └── requirements.txt
+│   ├── requirements.txt
+│   ├── .env.example
+│   └── .env                  # Local config (git-ignored)
 │
 └── .agent/                    # Documentation
-    ├── README.md             # This file
-    ├── system/               # Architecture docs
-    │   ├── architecture.md   # Full system design
+    ├── README.md             # This file — documentation index
+    ├── system/
+    │   ├── architecture.md   # Full system design & schemas
     │   └── critical-errors.md# Error history & fixes
-    └── sop/                  # Standard operating procedures
+    └── sop/
         └── local-dev.md      # Development setup guide
-```
-
----
-
-## Database Schema (Current)
-
-### `saved_items` table
-
-| Column | Type | Description |
-|--------|------|-------------|
-| id | INTEGER | Primary key, auto-increment |
-| source_url | VARCHAR(2048) | Unique tweet URL (indexed) |
-| source_platform | VARCHAR(50) | "twitter" |
-| content_type | VARCHAR(50) | "tweet" or "article" |
-| raw_preview | TEXT | Preview text from extension |
-| full_content | TEXT | Full tweet/article text |
-| thread_content | TEXT | Thread context (Phase 2) |
-| extra_data | JSON/TEXT | Metadata object |
-| status | VARCHAR(20) | "pending", "fetched", "fetch_failed" |
-| fetch_attempts | INTEGER | Retry counter |
-| created_at | DATETIME | Creation timestamp |
-| updated_at | DATETIME | Last update timestamp |
-
-### `extra_data` JSON Structure
-
-```json
-{
-  "content_type": "tweet" | "article",
-  "has_images": boolean,
-  "image_count": number,
-  "image_urls": string[],
-  "has_video": boolean,
-  "has_quote": boolean,
-  "quoted_author": string | null,
-  "quoted_text": string | null,
-  "has_show_more": boolean,
-  "article_title": string | null,
-  "article_description": string | null,
-  "article_cover_url": string | null
-}
 ```
 
 ---
 
 ## API Endpoints
 
+### Core
+
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Health check |
+| GET | `/health` | Health check (includes `ai_enabled` flag) |
 | POST | `/api/ingest` | Ingest items from extension |
-| GET | `/api/items` | List saved items (supports `?status=`, `?limit=`, `?offset=`) |
-| GET | `/api/items/{id}` | Get single item by ID |
+| GET | `/api/items` | List items (`?status=`, `?limit=`, `?offset=`) |
+| GET | `/api/items/{id}` | Get single item |
+
+### Processing (Phase 2)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/items/{id}/status` | Processing status |
+| POST | `/api/items/{id}/reprocess` | Trigger reprocessing (`?force=true`) |
+| GET | `/api/processing/stats` | Counts by summary/embedding status |
+| POST | `/api/processing/run-all` | Bulk process all pending items |
+| POST | `/api/search/semantic` | Semantic search with filters |
 
 ---
 
@@ -142,35 +116,35 @@ neurolink/
 |-----------|------------|
 | Extension | Chrome Manifest V3, Vanilla JS |
 | Backend | Python 3.11+, FastAPI, SQLAlchemy 2.0 |
-| Database | SQLite |
-| API Validation | Pydantic v2 |
+| Database | SQLite (structured data) |
+| Vector DB | Supabase pgvector (embeddings, HNSW index) |
+| AI / LLM | OpenAI GPT-4o-mini (summaries), text-embedding-3-small (embeddings) |
+| Retry | tenacity (exponential backoff) |
+| Validation | Pydantic v2 |
 
 ---
 
 ## Phase Roadmap
 
-### Phase 1: The Collector (Current - In Progress)
+### Phase 1: The Collector (Completed)
 - [x] Chrome Extension for scraping bookmarks
 - [x] FastAPI Backend for storage
-- [x] SQLite database
 - [x] Content type detection (tweet vs article)
 - [x] Metadata extraction (images, quotes, videos)
-- [x] "Show more" button expansion
-- [ ] **ISSUE:** Some articles being skipped (see critical-errors.md)
-- [ ] Thread extraction
+- [x] Virtual scrolling fix (incremental capture)
 
-### Phase 2: The Processor (Future)
-- [ ] Image downloading and storage
-- [ ] Video metadata/transcription
-- [ ] External link fetching
-- [ ] Full article content extraction
-- [ ] OpenAI summarization
-- [ ] Embedding generation
+### Phase 2: The Processor (Completed)
+- [x] OpenAI summarization
+- [x] Embedding generation + Supabase pgvector storage
+- [x] Background processing pipeline with retry
+- [x] Semantic search with content_type and date filters
+- [x] Smart reprocess (content hash comparison)
+- [x] Bulk processing + status/stats endpoints
 
 ### Phase 3: The Oracle (Future)
-- [ ] Vector storage (Pinecone/Chroma)
 - [ ] RAG-based chat interface
-- [ ] Semantic search
+- [ ] Multi-turn conversation with knowledge base
+- [ ] Advanced search UI
 
 ---
 
@@ -183,33 +157,35 @@ source venv/bin/activate
 uvicorn app.main:app --reload
 
 # 2. Load extension
-# Go to chrome://extensions
-# Enable Developer mode
-# Load unpacked -> select neurolink/extension/
+# Go to chrome://extensions → Developer mode → Load unpacked → select extension/
 
 # 3. Use
-# Go to twitter.com/i/bookmarks
-# Click extension icon -> Sync Bookmarks
+# Go to twitter.com/i/bookmarks → Click extension → Sync Bookmarks
 
 # 4. Verify
-curl http://localhost:8000/api/items | python -m json.tool
+curl http://localhost:8000/health
+curl http://localhost:8000/api/processing/stats
 ```
 
 ---
 
 ## Key Files to Understand
 
-1. **`extension/content.js`** - Main scraping logic, content type detection, metadata extraction
-2. **`backend/app/api/routes.py`** - API endpoints, ingest logic
-3. **`backend/app/models/item.py`** - Database model with JSONType for extra_data
-4. **`backend/app/core/database.py`** - SQLAlchemy setup with absolute path handling
+1. **`extension/content.js`** — Main scraping logic, content type detection, metadata extraction
+2. **`backend/app/api/routes.py`** — All API endpoints, ingest + background task triggers
+3. **`backend/app/services/processor.py`** — Background processing orchestrator (summary → embedding → Supabase)
+4. **`backend/app/services/openai_service.py`** — OpenAI API client with retry logic
+5. **`backend/app/services/vector_service.py`** — Supabase pgvector client
+6. **`backend/app/models/item.py`** — Database model with all fields
+7. **`backend/app/core/config.py`** — All configuration settings
 
 ---
 
 ## For Next Agent
 
-**Priority Issues to Fix:**
-1. Articles sometimes not being captured (check console logs for `[NeuroLink]` messages)
-2. Extension needs page refresh after reload (content script injection timing)
+**Priority for Phase 3:**
+1. Design RAG chat interface (likely needs a new `/api/chat` endpoint)
+2. Multi-turn conversation support with context window management
+3. Consider whether to add a frontend UI
 
-**See:** [Critical Errors & Fixes](system/critical-errors.md) for detailed error history and solutions.
+**See:** [System Architecture](system/architecture.md) for full technical details.

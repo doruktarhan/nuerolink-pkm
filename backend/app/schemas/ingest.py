@@ -38,6 +38,15 @@ class SavedItemResponse(BaseModel):
     fetch_attempts: int
     created_at: datetime
     updated_at: datetime
+    # AI Processing fields
+    summary: str | None = None
+    summary_model: str | None = None
+    summary_status: str = "pending"
+    embedding_status: str = "pending"
+    embedding_id: int | None = None
+    processing_error: str | None = None
+    processed_at: datetime | None = None
+    content_hash: str | None = None
 
     class Config:
         from_attributes = True
@@ -46,3 +55,44 @@ class SavedItemResponse(BaseModel):
 class ItemListResponse(BaseModel):
     items: list[SavedItemResponse]
     total: int
+
+
+class ProcessingStatusResponse(BaseModel):
+    item_id: int
+    summary_status: str
+    embedding_status: str
+    has_summary: bool
+    processing_error: str | None
+    processed_at: datetime | None
+    content_hash: str | None
+
+
+class SemanticSearchRequest(BaseModel):
+    query: str
+    limit: int = 10
+    threshold: float = 0.7
+    content_type: str | None = None
+    after: datetime | None = None
+    before: datetime | None = None
+
+
+class SemanticSearchResult(BaseModel):
+    item: SavedItemResponse
+    similarity: float
+    is_processing: bool
+
+
+class SemanticSearchResponse(BaseModel):
+    results: list[SemanticSearchResult]
+    total: int
+
+
+class BulkProcessResponse(BaseModel):
+    queued_count: int
+    message: str
+
+
+class ProcessingStatsResponse(BaseModel):
+    total_items: int
+    summary: dict[str, int]
+    embedding: dict[str, int]

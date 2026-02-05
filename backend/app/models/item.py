@@ -1,6 +1,6 @@
 from datetime import datetime
 import json
-from sqlalchemy import String, Text, Integer, DateTime, Index
+from sqlalchemy import String, Text, Integer, BigInteger, DateTime, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
@@ -43,6 +43,18 @@ class SavedItem(Base):
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
 
+    # AI Processing fields
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_model: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    summary_status: Mapped[str] = mapped_column(String(20), default="pending")
+    embedding_status: Mapped[str] = mapped_column(String(20), default="pending")
+    embedding_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    processing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     __table_args__ = (
         Index("ix_saved_items_status", "status"),
+        Index("ix_saved_items_summary_status", "summary_status"),
+        Index("ix_saved_items_embedding_status", "embedding_status"),
     )
